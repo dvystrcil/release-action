@@ -1,0 +1,54 @@
+# Validate this composite action's manifest on every PR + push to main.
+#
+# The lint catches the bug class that broke v0.1.0: colon-space inside an
+# unquoted YAML string. `Mapping values are not allowed in this context`
+# at action-load time is the GHA runner's only signal, and by then a
+# downstream consumer's CI has already failed.
+#
+# Runner: borrows mcp-server-docker-runner pending the consolidation
+# discussion (homelab issue tracking that). The lint needs no in-cluster
+# resources, so any ARC scale set with a Python interpreter works.
+
+name: validate
+
+on:
+  pull_request:
+    paths:
+      - action.yaml
+      - .github/workflows/validate.yaml
+  push:
+    branches: [main]
+    paths:
+      - action.yaml
+      - .github/workflows/validate.yaml
+
+jobs:
+  yaml-parse:
+    runs-on: mcp-server-docker-runner
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Parse action.yaml
+        run: |
+          python3 -c "
+          import sys, yaml
+          try:
+              manifest = yaml.safe_load(open('action.yaml'))
+          except yaml.YAMLError as exc:
+              print(f'::error file=action.yaml::YAML parse failure: {exc}')
+              sys.exit(1)
+          # Sanity: required GHA composite-action keys.
+          for key in ('name', 'description', 'runs'):
+              if key not in manifest:
+                  print(f'::error file=action.yaml::missing required key: {key}')
+                  sys.exit(1)
+          if manifest['runs'].get('using') != 'composite':
+              print('::error file=action.yaml::runs.using must be \"composite\"')
+              sys.exit(1)
+          print('action.yaml parses cleanly')
+          print(f'  name: {manifest[\"name\"]}')
+          print(f'  inputs: {list(manifest.get(\"inputs\", {}).keys())}')
+          print(f'  steps: {len(manifest[\"runs\"][\"steps\"])}')
+          "
