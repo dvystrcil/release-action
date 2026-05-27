@@ -1,0 +1,39 @@
+name: Release Bump
+description: Auto-create a patch-bump GitHub release on push to main
+author: dvystrcil
+
+inputs:
+  token:
+    description: GitHub token with `contents: write` (typically from actions/create-github-app-token)
+    required: true
+  initial-version:
+    description: Default tag when no previous release exists
+    required: false
+    default: v0.0.0
+
+runs:
+  using: composite
+  steps:
+    - name: Create GitHub release (patch-bump)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        INITIAL_VERSION: ${{ inputs.initial-version }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        LATEST_TAG=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+          "https://api.github.com/repos/${REPO}/releases/latest" \
+          | jq -r ".tag_name // \"${INITIAL_VERSION}\"" || echo "${INITIAL_VERSION}")
+        VERSION=${LATEST_TAG#v}
+        MAJOR=$(echo "$VERSION" | cut -d. -f1)
+        MINOR=$(echo "$VERSION" | cut -d. -f2)
+        PATCH=$(echo "$VERSION" | cut -d. -f3)
+        NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+        echo "Creating release ${NEW_TAG} (bumped from ${LATEST_TAG})"
+        curl -sf -X POST \
+          -H "Authorization: Bearer $GH_TOKEN" \
+          -H "Content-Type: application/json" \
+          "https://api.github.com/repos/${REPO}/releases" \
+          -d "$(jq -n --arg tag "$NEW_TAG" --arg name "$NEW_TAG" \
+            '{tag_name: $tag, name: $name, generate_release_notes: true}')"
