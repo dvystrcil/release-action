@@ -31,9 +31,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-python@v5
+        # The homelab ARC runner image (harbor.sirddail.net/arc/actions-runner)
+        # has python3 but no pip and no pyyaml. setup-python brings its own.
+        with:
+          python-version: '3.x'
+
+      - name: Install PyYAML
+        run: |
+          pip install --quiet pyyaml
+
       - name: Parse action.yaml
         run: |
-          python3 -c "
+          python -c "
           import sys, yaml
           try:
               manifest = yaml.safe_load(open('action.yaml'))
