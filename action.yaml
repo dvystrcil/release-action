@@ -4,7 +4,7 @@ author: dvystrcil
 
 inputs:
   token:
-    description: GitHub token with `contents: write` (typically from actions/create-github-app-token)
+    description: "GitHub token with `contents: write` (typically from actions/create-github-app-token)"
     required: true
   initial-version:
     description: Default tag when no previous release exists
