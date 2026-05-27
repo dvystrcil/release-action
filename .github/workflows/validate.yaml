@@ -5,9 +5,10 @@
 # at action-load time is the GHA runner's only signal, and by then a
 # downstream consumer's CI has already failed.
 #
-# Runner: borrows mcp-server-docker-runner pending the consolidation
-# discussion (homelab issue tracking that). The lint needs no in-cluster
-# resources, so any ARC scale set with a Python interpreter works.
+# Runner: release-action-runner (provisioned via argocd-projects#42).
+# homelab#239 closed as won't-fix: GitHub doesn't allow user-account-level
+# runners, so per-repo scale sets is the canonical path. release-action
+# gets its own entry in arc-build-runners.yaml.
 
 name: validate
 
@@ -24,7 +25,7 @@ on:
 
 jobs:
   yaml-parse:
-    runs-on: mcp-server-docker-runner
+    runs-on: release-action-runner
     permissions:
       contents: read
     steps:
