@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         # The homelab ARC runner image (harbor.sirddail.net/arc/actions-runner)
         # has python3 but no pip and no pyyaml. setup-python brings its own.
         with:
