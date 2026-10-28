@@ -16,11 +16,15 @@ on:
   pull_request:
     paths:
       - action.yaml
+      - release.sh
+      - tests/**
       - .github/workflows/validate.yaml
   push:
     branches: [main]
     paths:
       - action.yaml
+      - release.sh
+      - tests/**
       - .github/workflows/validate.yaml
 
 jobs:
@@ -71,3 +75,13 @@ jobs:
           print(f'  inputs: {list(manifest.get(\"inputs\", {}).keys())}')
           print(f'  steps: {len(manifest[\"runs\"][\"steps\"])}')
           "
+
+  unit:
+    # release.sh's version math and refusals (tests/test-release.sh).
+    runs-on: release-action-runner
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - run: tests/test-release.sh | tee out.txt
+      - run: grep -q '^TEST-RELEASE-COMPLETE$' out.txt
