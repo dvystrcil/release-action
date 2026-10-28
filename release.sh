@@ -32,6 +32,15 @@ major_tag() {  # major_tag <vX.Y.Z> -> vX
   echo "v${BASH_REMATCH[1]}"
 }
 
+release_payload() {  # release_payload <new tag> <sha> <previous release tag, or "">
+  # The previous release is named explicitly. Left to itself, GitHub picks
+  # the base for the notes; on a first release it picked a floating v1 tag
+  # one commit back (kustomize-validate-action v1.0.1: 1 PR of 17 listed).
+  jq -n --arg t "$1" --arg s "$2" --arg p "$3" \
+    '{tag_name: $t, target_commitish: $s, name: $t, generate_release_notes: true}
+     + (if $p == "" then {} else {previous_tag_name: $p} end)'
+}
+
 api() {  # api <METHOD> <path> [json] -> sets $STATUS and $BODY
   # Call it plainly, never as $(api ...): a command substitution is a
   # subshell, and the STATUS it set would vanish with it.
@@ -44,15 +53,21 @@ api() {  # api <METHOD> <path> [json] -> sets $STATUS and $BODY
 }
 
 main() {
-  local bump=${BUMP:-patch} sha=${TARGET_SHA:-${GITHUB_SHA:?}} latest new want
+  local bump=${BUMP:-patch} sha=${TARGET_SHA:-${GITHUB_SHA:?}} latest new want prev=""
 
   # Only a 404 means "no release yet". Anything else (401, 403, 5xx) used to
   # fall back to INITIAL_VERSION too, which would quietly cut v0.0.1 into a
   # repo already at v0.1.1.
   api GET /releases/latest
   case $STATUS in
-    200) latest=$(jq -r .tag_name <<<"$BODY") ;;
-    404) latest=${INITIAL_VERSION:-v0.0.0}; echo "no release yet; starting from $latest" ;;
+    200) latest=$(jq -r .tag_name <<<"$BODY"); prev=$latest ;;
+    404) latest=${INITIAL_VERSION:-v0.0.0}; echo "no release yet; starting from $latest"
+         # No release to name as the base, so GitHub picks one -- possibly a
+         # tag that is not a release (a floating v1), giving short notes.
+         api GET "/tags?per_page=1"
+         if [ "$STATUS" = 200 ] && [ "$(jq length <<<"$BODY")" -gt 0 ]; then
+           echo "::warning::first release, but the repo already has tags: GitHub picks the notes' base itself and they may be short. Check them; edit the release body if needed."
+         fi ;;
     *) echo "::error::reading the latest release: HTTP $STATUS $BODY"; return 1 ;;
   esac
   new=$(next_version "$latest" "$bump")
@@ -61,8 +76,7 @@ main() {
   [ "$STATUS" = 404 ] || { echo "::error::tag $new already exists (HTTP $STATUS); not overwriting a release"; return 1; }
 
   echo "Releasing $new ($bump bump from $latest) at $sha"
-  api POST /releases "$(jq -n --arg t "$new" --arg s "$sha" \
-    '{tag_name: $t, target_commitish: $s, name: $t, generate_release_notes: true}')"
+  api POST /releases "$(release_payload "$new" "$sha" "$prev")"
   [ "$STATUS" = 201 ] || { echo "::error::creating release $new: HTTP $STATUS $BODY"; return 1; }
   echo "release: $(jq -r .html_url <<<"$BODY")"
   echo "tag=$new" >> "${GITHUB_OUTPUT:-/dev/null}"
