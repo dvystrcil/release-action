@@ -177,10 +177,13 @@ def set_output(key: str, value: str) -> None:
 ATTEMPTS = 5
 
 
-def plan(work: Path, repo: str, images: list[str], version: str) -> dict[Path, str]:
-    """New text for each kustomization the release moves. Writes nothing."""
+def plan(work: Path, repo: str, images: list[str],
+         version: str) -> tuple[dict[Path, str], list[str]]:
+    """New text for each kustomization the release moves, and the tags it
+    replaces. Writes nothing."""
     seen = {image: [] for image in images}
     edits = {}
+    replaced = []
     for f in sorted(work.rglob("kustomization.yaml")):
         if ".git" in f.relative_to(work).parts:
             continue
@@ -188,6 +191,7 @@ def plan(work: Path, repo: str, images: list[str], version: str) -> dict[Path, s
         for image in images:
             new, found = bump_text(new, image, version)
             seen[image] += found
+            replaced += [t for t in found if semver(t) < semver(version)]
         if new != text:
             edits[f] = new
     missing = [image for image, found in seen.items() if not found]
@@ -195,17 +199,17 @@ def plan(work: Path, repo: str, images: list[str], version: str) -> dict[Path, s
         # Every image named must be deployed somewhere. Skipping one quietly
         # is how a consumer goes months without a bump.
         raise DeployError(f"no kustomization in {repo} has a newTag for {', '.join(missing)}")
-    return edits
+    return edits, replaced
 
 
 def open_pr(work: Path, auth: list[str], repo: str, images: list[str],
-            version: str, title: str) -> str:
+            version: str, title: str, reason: str) -> str:
     """The kill switch: the same validated commit, proposed instead of pushed."""
     branch = f"deploy/{images[0].rsplit('/', 1)[-1]}-{version}"
     git(work, *auth, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
     body = (f"Release `{version}` of {', '.join(f'`{i}`' for i in images)}.\n\n"
-            f"Opened as a PR because AUTO_DEPLOY is `false` for this source repo; "
-            f"otherwise release-action commits this straight to main. The diff was "
+            f"Opened as a PR because {reason}; otherwise release-action commits "
+            f"this straight to main. The diff was "
             f"checked the same way: newTag lines only, no downgrade, every kustomize "
             f"root renders with image-only changes.\n")
     r = subprocess.run(["gh", "pr", "create", "--repo", repo, "--base", "main",
@@ -225,10 +229,20 @@ def attempt(tmp: str, n: int, url: str, auth: list[str], repo: str,
     """
     work = Path(tmp) / f"try{n}"
     git(tmp, *auth, "clone", "-q", "--depth", "1", "--branch", "main", url, str(work))
-    edits = plan(work, repo, images, version)
+    edits, replaced = plan(work, repo, images, version)
     if not edits:
         print(f"{repo} main is already at or past {version}: nothing to deploy")
         return "noop"
+    crossed = sorted({t for t in replaced if semver(t)[0] != semver(version)[0]})
+    reason = "AUTO_DEPLOY is `false` for the source repo"
+    if auto and crossed:
+        # bump-image-tag.py, which this replaces, never crossed a major (its
+        # constraint follows the deployed tag). A major is a breaking change:
+        # it goes to review, not straight to main.
+        print(f"{version} crosses the deployed major ({', '.join(crossed)}): "
+              f"opening a PR instead of committing to main")
+        auto = False
+        reason = f"it crosses the deployed major ({', '.join(crossed)} -> {version})"
     build_roots = roots(work)
     before = render_all(work, build_roots)
     for f, text in edits.items():
@@ -242,7 +256,7 @@ def attempt(tmp: str, n: int, url: str, auth: list[str], repo: str,
     git(work, "-c", f"user.name={BOT[0]}", "-c", f"user.email={BOT[1]}",
         "commit", "-qam", title)
     if not auto:
-        return open_pr(work, auth, repo, images, version, title)
+        return open_pr(work, auth, repo, images, version, title, reason)
     # A plain push: never --force. Rejected as non-fast-forward means someone
     # else landed first; start again from their main, never from ours.
     r = git(work, *auth, "push", "-q", "origin", "HEAD:main", check=False)

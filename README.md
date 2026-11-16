@@ -60,6 +60,7 @@ With `deploy-repo` set, the released tag is committed **straight to the deploy r
 - **Never downgrade.** A tag already at or past the release is left alone (`noop`). A tag it cannot compare (`latest`, a digest, a prerelease) is refused, not overwritten. An image the deploy repo doesn't list fails the step.
 - **Re-read main, retry on non-fast-forward.** Each attempt starts from a fresh clone of `main`. A push rejected as non-fast-forward starts over from the new `main`, up to 5 times. Any other refusal (ruleset, auth) fails at once, without retrying and without falling back to a PR.
 - **Concurrency.** A composite action cannot declare `concurrency:`, so the calling job must (example below). The guards above keep correctness without it: an older release that loses a race finds main already past it and does nothing. GitHub concurrency groups are scoped to one repo, so two *different* source repos writing one deploy repo are serialized only by the retry.
+- **Majors go to review.** A release whose major differs from a tag it would replace (`0.0.381` → `1.0.0`) opens a PR instead of committing, as `bin/bump-image-tag.py`'s constraint never crossed a major.
 - **Kill switch.** `auto-deploy: false` makes the same validated commit, pushes it to `deploy/<image>-<version>` and opens a PR. Anything other than `true`, `false` or empty is refused.
 
 Commits are authored `homelab-bump-bot` (homelab's auto-merge gate keys on it for the PR path). The push needs a **ruleset bypass for the token's App** on the deploy repo's `main`.
