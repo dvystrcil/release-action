@@ -280,6 +280,24 @@ echo https://github.com/dvystrcil/cluster-ops/pull/9
         self.assertFalse(self.gh_log.exists(), "a typo fell back to a PR")
         self.assertEqual(git(self.remote, "branch", "--list", "deploy/*").stdout, "")
 
+    def test_a_release_crossing_the_deployed_major_becomes_a_pr(self):
+        # bump-image-tag.py never crossed a major (its constraint follows the
+        # deployed tag). A major is a breaking change: review it, don't ship it.
+        before = self.main_sha()
+        r = self.deploy("1.0.0")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(self.main_sha(), before)
+        self.assertEqual(self.output().get("result"), "pr")
+        self.assertIn("newTag: 1.0.0", git(self.remote, "show",
+                      "deploy/homelab-bin-1.0.0:mcp-trust-audit/kustomization.yaml").stdout)
+        self.assertIn("major", r.stdout)
+
+    def test_a_release_within_the_major_still_commits(self):
+        self.files({"mcp-trust-audit/kustomization.yaml": KUST.replace("0.0.5", "1.2.3")})
+        r = self.deploy("1.3.0")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(self.output().get("result"), "committed")
+
     def test_a_version_that_is_not_x_y_z_is_refused(self):
         before = self.main_sha()
         for bad in ("dev", "0.0.6-rc1", "0.6", ""):
