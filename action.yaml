@@ -22,6 +22,30 @@ inputs:
     description: Commit SHA to release. Defaults to the workflow's commit
     required: false
     default: ""
+  create-release:
+    description: "false: skip creating a release and only deploy `version` (e.g. from a `release: published` workflow, once promote has pushed the image tag)"
+    required: false
+    default: "true"
+  version:
+    description: "The tag to deploy, vX.Y.Z or X.Y.Z. Default: the release this run just created"
+    required: false
+    default: ""
+  deploy-repo:
+    description: "owner/name of the kustomize deploy repo. When set, the released tag is committed straight to its main (homelab#2320). Empty (default): no deploy"
+    required: false
+    default: ""
+  deploy-images:
+    description: "Image names whose newTag moves, space or newline separated, e.g. harbor.sirddail.net/ai/homelab-bin. Every one must appear in the deploy repo"
+    required: false
+    default: ""
+  deploy-token:
+    description: "Token with `contents: write` (and `pull-requests: write` for the kill switch) on deploy-repo. Default: token"
+    required: false
+    default: ""
+  auto-deploy:
+    description: "Kill switch. false: open a bump PR instead of committing to main. Pass the repo variable vars.AUTO_DEPLOY; empty means true"
+    required: false
+    default: "true"
 
 outputs:
   tag:
@@ -30,12 +54,16 @@ outputs:
   major-tag:
     description: The floating tag moved, e.g. v1 (empty unless move-major-tag)
     value: ${{ steps.release.outputs.major-tag }}
+  deploy-result:
+    description: "committed, noop (deploy repo already at or past it), pr (kill switch), or empty (no deploy-repo)"
+    value: ${{ steps.deploy.outputs.result }}
 
 runs:
   using: composite
   steps:
     - name: Create GitHub release
       id: release
+      if: inputs.create-release != 'false'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
@@ -45,3 +73,30 @@ runs:
         TARGET_SHA: ${{ inputs.target }}
         REPO: ${{ github.repository }}
       run: ${{ github.action_path }}/release.sh
+
+    # The deploy renders every kustomize root with `kubectl kustomize`, as the
+    # deploy repo's own `manifests` check does (kustomize-validate-action).
+    - name: Install kubectl
+      if: inputs.deploy-repo != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v kubectl >/dev/null; then
+          ver="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+          curl -fsSL -o "$RUNNER_TEMP/kubectl" "https://dl.k8s.io/release/${ver}/bin/linux/amd64/kubectl"
+          chmod +x "$RUNNER_TEMP/kubectl"
+          mkdir -p "$HOME/.local/bin" && mv "$RUNNER_TEMP/kubectl" "$HOME/.local/bin/"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        fi
+
+    - name: Deploy the release
+      id: deploy
+      if: inputs.deploy-repo != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.deploy-token || inputs.token }}
+        DEPLOY_REPO: ${{ inputs.deploy-repo }}
+        DEPLOY_IMAGES: ${{ inputs.deploy-images }}
+        DEPLOY_VERSION: ${{ inputs.version || steps.release.outputs.tag }}
+        DEPLOY_AUTO: ${{ inputs.auto-deploy }}
+      run: python3 "${{ github.action_path }}/deploy.py"
