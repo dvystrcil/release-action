@@ -2,10 +2,11 @@
 # so every release is also the end-to-end test of the API paths that
 # tests/test-release.sh deliberately does not mock.
 #
-# Manual on purpose: consumers pin exact tags (@v0.1.1, see README "Version
-# policy"), so a release changes nothing until a consumer bumps -- but the
-# version number is still a decision, not a side effect of merging.
+# Manual on purpose: consumers pin the floating major tag (@v1, see README
+# "Version policy"), and every release moves it. A release therefore ships
+# to every consumer at once, so it is a decision, not a side effect of merging.
 #   gh workflow run release.yaml --repo dvystrcil/release-action -f bump=minor
+# Rollback: point v1 back at the previous release (git push -f origin <sha>:refs/tags/v1).
 
 name: release
 
@@ -31,4 +32,5 @@ jobs:
         with:
           token: ${{ github.token }}
           bump: ${{ inputs.bump }}
+          move-major-tag: true
       - run: echo "released ${{ steps.release.outputs.tag }}"
