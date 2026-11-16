@@ -22,7 +22,7 @@ Pairs with the homelab's image-tagging convention: git tags use `vX.Y.Z`, Docker
     private-key: ${{ secrets.CICD_APP_PRIVATE_KEY }}
 
 - name: Auto-bump release
-  uses: dvystrcil/release-action@v0.1.0
+  uses: dvystrcil/release-action@v1
   with:
     token: ${{ steps.app-token.outputs.token }}
 ```
@@ -82,7 +82,7 @@ jobs:
           private-key: ${{ env.CICD_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: tor-dice
-      - uses: dvystrcil/release-action@v0.3.0
+      - uses: dvystrcil/release-action@v1
         with:
           token: ${{ steps.app-token.outputs.token }}
           create-release: false
@@ -109,7 +109,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: dvystrcil/release-action@v0.2.0
+      - uses: dvystrcil/release-action@v1
         with:
           token: ${{ github.token }}
           bump: ${{ inputs.bump }}
@@ -123,7 +123,11 @@ jobs:
 
 ## Version policy
 
-Pinned semver tags only — `@v0.1.0`, never `@main`. Each consumer bump is intentional.
+Consumers pin the floating major tag, **`@v1`**, never `@main` or a SHA (homelab's own-actions policy: a fix ships fleet-wide by moving the tag, with no Renovate PR per repo). Every release of this action moves `v1` (`move-major-tag: true` in `release.yaml`), so a release *is* the rollout. That is why releasing is manual.
+
+- A breaking change is a **major** bump: it creates `v2` and leaves `v1` where it was, so no `@v1` consumer gets it by accident.
+- Rollback: point `v1` back at the previous release, `git push -f origin <previous release sha>:refs/tags/v1`.
+- An exact tag (`@v1.0.0`) still works for a consumer that must not move.
 
 The action's own release cadence follows the homelab convention: git release tags are `vX.Y.Z`. Patch = backwards-compatible change to the bump logic; minor = new input or behavior; major = breaking change to inputs or default behavior.
 
