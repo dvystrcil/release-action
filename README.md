@@ -36,6 +36,12 @@ Pairs with the homelab's image-tagging convention: git tags use `vX.Y.Z`, Docker
 | `bump` | no | `patch` | `patch`, `minor` or `major`. |
 | `move-major-tag` | no | `false` | `true` for action repos whose consumers pin `@v1`: moves (or creates) `v<MAJOR>` to the release commit. |
 | `target` | no | workflow commit | Commit SHA to release. |
+| `create-release` | no | `true` | `false`: create no release, only deploy `version`. |
+| `version` | no | the release just created | Tag to deploy (`vX.Y.Z` or `X.Y.Z`). |
+| `deploy-repo` | no | — | `owner/name` of the kustomize deploy repo. Empty: no deploy. |
+| `deploy-images` | no | — | Image names whose `newTag` moves. Each must appear in the deploy repo. |
+| `deploy-token` | no | `token` | `contents: write` (+ `pull-requests: write` for the kill switch) on `deploy-repo`. |
+| `auto-deploy` | no | `true` | Kill switch: `false` opens a bump PR instead. Pass `${{ vars.AUTO_DEPLOY }}`. |
 
 ## Outputs
 
@@ -43,6 +49,50 @@ Pairs with the homelab's image-tagging convention: git tags use `vX.Y.Z`, Docker
 | --- | --- |
 | `tag` | The release created, e.g. `v1.2.3`. |
 | `major-tag` | The floating tag moved, e.g. `v1`. Empty unless `move-major-tag`. |
+| `deploy-result` | `committed`, `noop` (deploy repo already at or past it), `pr` (kill switch), or empty. |
+
+## Deploy: merge = release = deploy
+
+With `deploy-repo` set, the released tag is committed **straight to the deploy repo's `main`** (no bump PR). See [homelab#2320](https://github.com/dvystrcil/homelab/issues/2320). `deploy.py` does it, and each guard below has a test in `tests/test_deploy.py`:
+
+- **newTag lines only.** It edits the `newTag:` under `- name: <image>` in every `kustomization.yaml` that lists the image, as a text edit, never a YAML round-trip. `git diff -U0` must then show only paired `newTag:` lines.
+- **Validation.** It renders every kustomize root (bases and Components excluded, as kustomize-validate-action does) before and after the edit. Every render must succeed, the renders may differ only in `image:` lines, and at least one must change. main already passed the deploy repo's required `manifests` check, so an image-only render diff cannot break the schema.
+- **Never downgrade.** A tag already at or past the release is left alone (`noop`). A tag it cannot compare (`latest`, a digest, a prerelease) is refused, not overwritten. An image the deploy repo doesn't list fails the step.
+- **Re-read main, retry on non-fast-forward.** Each attempt starts from a fresh clone of `main`. A push rejected as non-fast-forward starts over from the new `main`, up to 5 times. Any other refusal (ruleset, auth) fails at once, without retrying and without falling back to a PR.
+- **Concurrency.** A composite action cannot declare `concurrency:`, so the calling job must (example below). The guards above keep correctness without it: an older release that loses a race finds main already past it and does nothing. GitHub concurrency groups are scoped to one repo, so two *different* source repos writing one deploy repo are serialized only by the retry.
+- **Kill switch.** `auto-deploy: false` makes the same validated commit, pushes it to `deploy/<image>-<version>` and opens a PR. Anything other than `true`, `false` or empty is refused.
+
+Commits are authored `homelab-bump-bot` (homelab's auto-merge gate keys on it for the PR path). The push needs a **ruleset bypass for the token's App** on the deploy repo's `main`.
+
+Call it **after the image tag exists**. In a `*-docker` repo that is the `release: published` workflow, after promote:
+
+```yaml
+jobs:
+  deploy:
+    needs: promote
+    runs-on: tor-dice-docker-runner
+    concurrency:
+      group: deploy-dvystrcil/tor-dice
+      cancel-in-progress: false   # one pending run: the latest release wins
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ env.CICD_APP_CLIENT_ID }}
+          private-key: ${{ env.CICD_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: tor-dice
+      - uses: dvystrcil/release-action@v0.3.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          create-release: false
+          version: ${{ github.event.release.tag_name }}
+          deploy-repo: dvystrcil/tor-dice
+          deploy-images: harbor.sirddail.net/ai/tor-dice
+          auto-deploy: ${{ vars.AUTO_DEPLOY }}
+```
+
+The runner needs `git` and `python3` (stdlib only). `kubectl` is installed if absent.
 
 ## Action repos: release on demand, move `v1`
 
@@ -69,7 +119,7 @@ jobs:
 
 ## Releasing this action
 
-`gh workflow run release.yaml --repo dvystrcil/release-action -f bump=minor`. It releases with `uses: ./`, this commit's own code, so each release is also the end-to-end test of the API calls. `tests/test-release.sh` covers the version math and refusals without mocking the API.
+`gh workflow run release.yaml --repo dvystrcil/release-action -f bump=minor`. It releases with `uses: ./`, this commit's own code, so each release is also the end-to-end test of the API calls. `tests/test-release.sh` covers the version math and refusals without mocking the API. `python3 -m unittest discover -s tests` runs the deploy guards against a real bare git repo.
 
 ## Version policy
 
