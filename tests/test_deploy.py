@@ -306,6 +306,73 @@ echo https://github.com/dvystrcil/cluster-ops/pull/9
         self.assertEqual(self.main_sha(), before)
 
 
+    # --- tag-suffix: X.Y.Z plus a declared build suffix (homelab#2320) ----
+    # ollama's image is `<upstream X.Y.Z>-rocm-homelab`. Docker tags can't
+    # carry `+build` metadata, so the info rides after a `-`, which looks
+    # exactly like a prerelease. It is accepted only when declared.
+    SFX = "-rocm-homelab"
+
+    def flavoured(self, tag):
+        self.files({"mcp-trust-audit/kustomization.yaml":
+                    KUST.replace("newTag: 0.0.5", f"newTag: {tag}")}, f"at {tag}")
+
+    def test_a_declared_suffix_release_lands_like_a_plain_one(self):
+        self.flavoured("0.40.2" + self.SFX)
+        r = self.deploy("0.40.3" + self.SFX, DEPLOY_TAG_SUFFIX=self.SFX)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(self.output().get("result"), "committed")
+        self.assertIn("newTag: 0.40.3-rocm-homelab",
+                      self.main_file("mcp-trust-audit/kustomization.yaml"))
+
+    def test_a_declared_suffix_release_never_downgrades(self):
+        self.flavoured("0.40.5" + self.SFX)
+        before = self.main_sha()
+        r = self.deploy("0.40.3" + self.SFX, DEPLOY_TAG_SUFFIX=self.SFX)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(self.main_sha(), before)
+        self.assertEqual(self.output().get("result"), "noop")
+
+    def test_a_deployed_tag_of_another_flavour_is_refused(self):
+        """A bare X.Y.Z or a different suffix on main is someone's decision."""
+        for tag in ("0.40.2", "0.40.2-cuda-homelab", "0.40.2-rocm-homelab-x"):
+            with self.subTest(tag=tag):
+                self.flavoured(tag)
+                before = self.main_sha()
+                r = self.deploy("0.40.3" + self.SFX, DEPLOY_TAG_SUFFIX=self.SFX)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertEqual(self.main_sha(), before)
+                self.assertIn(tag, r.stdout + r.stderr)
+
+    def test_a_version_without_the_declared_suffix_is_refused(self):
+        self.flavoured("0.40.2" + self.SFX)
+        before = self.main_sha()
+        for bad in ("0.40.3", "0.40.3-rc1", "0.40.3-rocm-homelab-rc1", "dev" + self.SFX):
+            with self.subTest(bad=bad):
+                r = self.deploy(bad, DEPLOY_TAG_SUFFIX=self.SFX)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                # Refused up front with a reason, not by a crash further in.
+                self.assertIn("only a release deploys", r.stdout + r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(self.main_sha(), before)
+
+    def test_a_malformed_suffix_is_refused(self):
+        before = self.main_sha()
+        for bad in ("rocm-homelab", "-", "-a b", "-$x", "--x"):
+            with self.subTest(bad=bad):
+                r = self.deploy("0.0.6" + bad, DEPLOY_TAG_SUFFIX=bad)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("tag-suffix", r.stdout + r.stderr)
+        self.assertEqual(self.main_sha(), before)
+
+    def test_a_declared_suffix_release_crossing_the_major_becomes_a_pr(self):
+        self.flavoured("0.40.2" + self.SFX)
+        before = self.main_sha()
+        r = self.deploy("1.0.0" + self.SFX, DEPLOY_TAG_SUFFIX=self.SFX)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(self.main_sha(), before)
+        self.assertEqual(self.output().get("result"), "pr")
+
+
 class DiffGuard(unittest.TestCase):
     """check_diff() is the last thing between an editing bug and production:
     whatever bump_text() did, only `newTag:` lines may change."""

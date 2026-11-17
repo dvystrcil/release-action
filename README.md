@@ -42,6 +42,7 @@ Pairs with the homelab's image-tagging convention: git tags use `vX.Y.Z`, Docker
 | `deploy-images` | no | — | Image names whose `newTag` moves. Each must appear in the deploy repo. |
 | `deploy-token` | no | `token` | `contents: write` (+ `pull-requests: write` for the kill switch) on `deploy-repo`. |
 | `auto-deploy` | no | `true` | Kill switch: `false` opens a bump PR instead. Pass `${{ vars.AUTO_DEPLOY }}`. |
+| `tag-suffix` | no | (empty) | A fixed build suffix on every tag, e.g. `-rocm-homelab`. Versions and deployed tags must be `X.Y.Z<suffix>`. |
 
 ## Outputs
 
@@ -61,6 +62,7 @@ With `deploy-repo` set, the released tag is committed **straight to the deploy r
 - **Re-read main, retry on non-fast-forward.** Each attempt starts from a fresh clone of `main`. A push rejected as non-fast-forward starts over from the new `main`, up to 5 times. Any other refusal (ruleset, auth) fails at once, without retrying and without falling back to a PR.
 - **Concurrency.** A composite action cannot declare `concurrency:`, so the calling job must (example below). The guards above keep correctness without it: an older release that loses a race finds main already past it and does nothing. GitHub concurrency groups are scoped to one repo, so two *different* source repos writing one deploy repo are serialized only by the retry.
 - **Majors go to review.** A release whose major differs from a tag it would replace (`0.0.381` → `1.0.0`) opens a PR instead of committing, as `bin/bump-image-tag.py`'s constraint never crossed a major.
+- **Build suffix, declared.** A tag like `0.40.3-rocm-homelab` is semver plus build info. Docker tags can't carry `+build`, so the info follows a `-`, where it looks just like a prerelease. It deploys only with `tag-suffix: -rocm-homelab`: the version and every tag it replaces must end in exactly that suffix, and ordering (no downgrade, majors to review) uses the `X.Y.Z`. A bare tag or another suffix on main is refused. Undeclared, `0.0.6-rc1` is still refused.
 - **Kill switch.** `auto-deploy: false` makes the same validated commit, pushes it to `deploy/<image>-<version>` and opens a PR. Anything other than `true`, `false` or empty is refused.
 
 Commits are authored `homelab-bump-bot` (homelab's auto-merge gate keys on it for the PR path). The push needs a **ruleset bypass for the token's App** on the deploy repo's `main`.
