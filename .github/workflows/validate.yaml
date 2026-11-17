@@ -35,9 +35,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         # The homelab ARC runner image (harbor.sirddail.net/arc/actions-runner)
         # has python3 but no pip and no pyyaml. setup-python brings its own.
         with:
@@ -84,7 +84,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: tests/test-release.sh | tee out.txt
       - run: grep -q '^TEST-RELEASE-COMPLETE$' out.txt
 
@@ -96,7 +96,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v 2>&1 | tee out.txt
       # The pipe hides unittest's exit code; the summary line is the marker.
       - run: grep -qx 'OK' out.txt
