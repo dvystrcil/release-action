@@ -44,19 +44,31 @@ def git(cwd, *args, check=True):
 SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 
-def semver(tag: str) -> tuple[int, int, int] | None:
+SUFFIX = re.compile(r"^(-[0-9A-Za-z][0-9A-Za-z.-]*)?$")
+
+
+def semver(tag: str, suffix: str = "") -> tuple[int, int, int] | None:
+    """The X.Y.Z of `tag`, or None. With a declared `suffix` (tag-suffix,
+    e.g. `-rocm-homelab`), the tag must be exactly X.Y.Z<suffix>: docker tags
+    can't carry `+build` info, so it rides after a `-`, where it looks just
+    like a prerelease. Undeclared, any suffix is refused."""
+    if suffix:
+        if not tag.endswith(suffix):
+            return None
+        tag = tag[: -len(suffix)]
     m = SEMVER.match(tag)
     return tuple(int(x) for x in m.groups()) if m else None
 
 
-def bump_text(text: str, image: str, version: str) -> tuple[str, list[str]]:
+def bump_text(text: str, image: str, version: str,
+              suffix: str = "") -> tuple[str, list[str]]:
     """Raise the newTag line under each `- name: <image>` to `version`.
 
     Returns the new text and the current tags it found. Never lowers a tag,
     and refuses one it cannot compare (`latest`, a digest, a prerelease):
     whoever pinned that made a decision a release must not overwrite.
     """
-    want = semver(version)
+    want = semver(version, suffix)
     lines = text.splitlines(keepends=True)
     found = []
     for i, line in enumerate(lines):
@@ -66,10 +78,10 @@ def bump_text(text: str, image: str, version: str) -> tuple[str, list[str]]:
                 if m:
                     cur = m.group(1).strip("'\"")
                     found.append(cur)
-                    if semver(cur) is None:
-                        raise DeployError(f"{image} is at {cur!r}, which is not X.Y.Z: "
+                    if semver(cur, suffix) is None:
+                        raise DeployError(f"{image} is at {cur!r}, which is not X.Y.Z{suffix}: "
                                           f"refusing to overwrite a tag it cannot compare")
-                    if semver(cur) < want:
+                    if semver(cur, suffix) < want:
                         lines[j] = re.sub(r"(newTag:\s*)\S+", rf"\g<1>{version}", lines[j])
                     break
     return "".join(lines), found
@@ -177,8 +189,8 @@ def set_output(key: str, value: str) -> None:
 ATTEMPTS = 5
 
 
-def plan(work: Path, repo: str, images: list[str],
-         version: str) -> tuple[dict[Path, str], list[str]]:
+def plan(work: Path, repo: str, images: list[str], version: str,
+         suffix: str = "") -> tuple[dict[Path, str], list[str]]:
     """New text for each kustomization the release moves, and the tags it
     replaces. Writes nothing."""
     seen = {image: [] for image in images}
@@ -189,9 +201,9 @@ def plan(work: Path, repo: str, images: list[str],
             continue
         text = new = f.read_text()
         for image in images:
-            new, found = bump_text(new, image, version)
+            new, found = bump_text(new, image, version, suffix)
             seen[image] += found
-            replaced += [t for t in found if semver(t) < semver(version)]
+            replaced += [t for t in found if semver(t, suffix) < semver(version, suffix)]
         if new != text:
             edits[f] = new
     missing = [image for image, found in seen.items() if not found]
@@ -222,18 +234,19 @@ def open_pr(work: Path, auth: list[str], repo: str, images: list[str],
 
 
 def attempt(tmp: str, n: int, url: str, auth: list[str], repo: str,
-            images: list[str], version: str, auto: bool = True) -> str:
+            images: list[str], version: str, auto: bool = True,
+            suffix: str = "") -> str:
     """One read-edit-validate-push against main as it is NOW.
 
     Returns "committed", "noop", or "retry" when main moved under us.
     """
     work = Path(tmp) / f"try{n}"
     git(tmp, *auth, "clone", "-q", "--depth", "1", "--branch", "main", url, str(work))
-    edits, replaced = plan(work, repo, images, version)
+    edits, replaced = plan(work, repo, images, version, suffix)
     if not edits:
         print(f"{repo} main is already at or past {version}: nothing to deploy")
         return "noop"
-    crossed = sorted({t for t in replaced if semver(t)[0] != semver(version)[0]})
+    crossed = sorted({t for t in replaced if semver(t, suffix)[0] != semver(version, suffix)[0]})
     reason = "AUTO_DEPLOY is `false` for the source repo"
     if auto and crossed:
         # bump-image-tag.py, which this replaces, never crossed a major (its
@@ -278,8 +291,11 @@ def main() -> int:
     if not images:
         raise DeployError("deploy-images is empty")
     version = os.environ.get("DEPLOY_VERSION", "").removeprefix("v")
-    if semver(version) is None:
-        raise DeployError(f"version {version!r} is not X.Y.Z: only a release deploys")
+    suffix = os.environ.get("DEPLOY_TAG_SUFFIX", "").strip()
+    if not SUFFIX.match(suffix):
+        raise DeployError(f"tag-suffix {suffix!r} must start with '-' and use [0-9A-Za-z.-]")
+    if semver(version, suffix) is None:
+        raise DeployError(f"version {version!r} is not X.Y.Z{suffix}: only a release deploys")
     switch = (os.environ.get("DEPLOY_AUTO") or "true").strip().lower()
     if switch not in ("true", "false"):
         raise DeployError(f"auto-deploy must be true or false, got {switch!r}")
@@ -291,7 +307,7 @@ def main() -> int:
         auth = ["-c", f"http.https://github.com/.extraheader=AUTHORIZATION: basic {basic}"]
     with tempfile.TemporaryDirectory(prefix="deploy-") as tmp:
         for n in range(1, ATTEMPTS + 1):
-            result = attempt(tmp, n, url, auth, repo, images, version, auto)
+            result = attempt(tmp, n, url, auth, repo, images, version, auto, suffix)
             if result != "retry":
                 set_output("result", result)
                 return 0

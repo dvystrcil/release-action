@@ -46,6 +46,10 @@ inputs:
     description: "Kill switch. false: open a bump PR instead of committing to main. Pass the repo variable vars.AUTO_DEPLOY; empty means true"
     required: false
     default: "true"
+  tag-suffix:
+    description: "Deploy only: a fixed build suffix on every tag, e.g. -rocm-homelab for 0.40.3-rocm-homelab. Versions and deployed tags must be X.Y.Z<suffix>; ordering uses X.Y.Z. Empty: plain X.Y.Z only"
+    required: false
+    default: ""
 
 outputs:
   tag:
@@ -99,4 +103,5 @@ runs:
         DEPLOY_IMAGES: ${{ inputs.deploy-images }}
         DEPLOY_VERSION: ${{ inputs.version || steps.release.outputs.tag }}
         DEPLOY_AUTO: ${{ inputs.auto-deploy }}
+        DEPLOY_TAG_SUFFIX: ${{ inputs.tag-suffix }}
       run: python3 "${{ github.action_path }}/deploy.py"
