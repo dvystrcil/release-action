@@ -55,7 +55,11 @@ RENDER = textwrap.dedent("""\
         m = re.match(r"^\\s*-\\s*name:\\s*(\\S+)", line)
         if m: name = m.group(1)
         m = re.match(r"^\\s*newTag:\\s*(\\S+)", line)
-        if m and name: print(f"        image: {name}:{m.group(1)}"); name = None
+        if m and name:
+            print(f"        image: {name}:{m.group(1)}")
+            if (d / "ENVREF").exists():   # a replacements: copy of the image (gpu-batch#16)
+                print(f"          value: {name}:{m.group(1)}")
+            name = None
     print("kind: CronJob")
 """)
 
@@ -214,6 +218,17 @@ class DeployRepo(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("stamp", r.stdout + r.stderr)
         self.assertEqual(self.main_sha(), before)
+
+    def test_an_image_reference_copied_into_another_field_moves_with_the_tag(self):
+        # gpu-batch copies each CronJob image, tag included, into an env
+        # `value:` (replacements:, gpu-batch#16), so a bump changes that line
+        # too. It is the same image reference moving to the released tag.
+        self.files({"mcp-trust-audit/ENVREF": ""})
+        r = self.deploy()
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(self.main_file("mcp-trust-audit/kustomization.yaml"),
+                         KUST.replace("newTag: 0.0.5", "newTag: 0.0.6"))
+        self.assertEqual(self.output().get("result"), "committed")
 
     def test_a_bump_no_render_picks_up_is_refused(self):
         # The tag moves in a base/ that no overlay renders: nothing deploys,
@@ -425,6 +440,141 @@ class DiffGuard(unittest.TestCase):
     def test_an_empty_diff_is_refused(self):
         with self.assertRaises(self.Error):
             self.check("")
+
+
+
+class RenderGuard(unittest.TestCase):
+    """check_renders() with the release's images and version: a changed line
+    that is not an `image:` line passes only when the one difference between
+    the removed and added line is a deployed image reference moving from its
+    old tag to the released one."""
+
+    A = "harbor.sirddail.net/ai/gpu-batch-blender"
+    B = "harbor.sirddail.net/ai/gpu-batch-freecad"
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT))
+        self.addCleanup(sys.path.remove, str(ROOT))
+        import deploy
+        self.deploy = deploy
+
+    def render(self, a_tag, b_tag, extra=""):
+        # The shape of dvystrcil/gpu-batch's overlays render (kustomize sorts
+        # keys, so env `value:` comes after the container `image:` lines).
+        return textwrap.dedent(f"""\
+            kind: CronJob
+            metadata:
+              name: blender-render
+            spec:
+              containers:
+              - env:
+                - name: GPU_BATCH_IMAGE
+                  value: {self.A}:{a_tag}
+                image: {self.A}:{a_tag}
+                name: run
+            ---
+            kind: CronJob
+            metadata:
+              name: freecad-sweep
+            spec:
+              containers:
+              - env:
+                - name: GPU_BATCH_IMAGE
+                  value: {self.B}:{b_tag}
+                image: {self.B}:{b_tag}
+                name: run
+            """) + extra
+
+    def check(self, old, new, images=None, version="0.0.99"):
+        return self.deploy.check_renders(
+            {"overlays": old}, {"overlays": new},
+            [self.A, self.B] if images is None else images, version)
+
+    def refused(self, old, new, **kw):
+        with self.assertRaises(self.deploy.DeployError) as cm:
+            self.check(old, new, **kw)
+        return str(cm.exception)
+
+    def test_the_gpu_batch_bump_passes(self):
+        self.assertEqual(self.check(self.render("0.0.22", "0.0.22"),
+                                    self.render("0.0.99", "0.0.99")), ["overlays"])
+
+    def test_without_images_a_reference_line_is_still_refused(self):
+        # The old two-argument call keeps the old rule.
+        with self.assertRaises(self.deploy.DeployError):
+            self.deploy.check_renders({"r": self.render("0.0.22", "0.0.22")},
+                                      {"r": self.render("0.0.99", "0.0.99")})
+
+    def test_a_reference_turning_into_another_image_is_refused(self):
+        old = self.render("0.0.22", "0.0.22")
+        new = self.render("0.0.99", "0.0.99").replace(
+            f"value: {self.A}:0.0.99", f"value: {self.B}:0.0.99")
+        self.assertIn("value:", self.refused(old, new))
+
+    def test_a_tag_move_on_an_image_not_being_deployed_is_refused(self):
+        old = self.render("0.0.22", "0.0.22")
+        new = self.render("0.0.99", "0.0.99")
+        self.assertIn("value:", self.refused(old, new, images=[self.A]))
+
+    def test_a_tag_move_plus_any_other_change_on_the_line_is_refused(self):
+        old = self.render("0.0.22", "0.0.22")
+        for tampered in (f"value: {self.A}:0.0.99 # x",
+                         f"valu: {self.A}:0.0.99",
+                         f"value: {self.A}:0.0.99,{self.A}:0.0.99",
+                         f"value: {self.A}:0.0.99@sha256:abc"):
+            with self.subTest(tampered=tampered):
+                new = self.render("0.0.99", "0.0.99").replace(
+                    f"value: {self.A}:0.0.99", tampered)
+                self.refused(old, new)
+
+    def test_a_line_carrying_two_references_is_refused(self):
+        # Which copy is "the" reference is ambiguous: refuse, even when only
+        # one of them moves.
+        line = "args: [{a}:{t}, {a}:{u}]"
+        old = self.render("0.0.22", "0.0.22",
+                          line.format(a=self.A, t="0.0.22", u="0.0.22") + "\n")
+        for t, u in (("0.0.99", "0.0.99"), ("0.0.99", "0.0.22"), ("0.0.22", "0.0.99")):
+            with self.subTest(t=t, u=u):
+                new = self.render("0.0.99", "0.0.99", line.format(a=self.A, t=t, u=u) + "\n")
+                self.assertIn("args", self.refused(old, new))
+
+    def test_a_non_image_line_change_is_refused(self):
+        old = self.render("0.0.22", "0.0.22", "replicas: 1\n")
+        new = self.render("0.0.99", "0.0.99", "replicas: 2\n")
+        self.assertIn("replicas", self.refused(old, new))
+
+    def test_a_tag_other_than_the_release_is_refused(self):
+        old = self.render("0.0.22", "0.0.22")
+        new = self.render("0.0.98", "0.0.98")
+        self.refused(old, new)
+
+    def test_a_reference_moving_down_is_refused(self):
+        old = self.render("0.1.0", "0.1.0")
+        new = self.render("0.0.99", "0.0.99")
+        self.refused(old, new)
+
+    def test_an_allowed_pair_cannot_carry_an_unpaired_line(self):
+        # One extra added line at the end of a hunk of allowed pairs: pairing
+        # by position must not just drop it.
+        old = self.render("0.0.22", "0.0.22")
+        new = self.render("0.0.99", "0.0.99").replace(
+            f"    image: {self.A}:0.0.99\n",
+            f"    image: {self.A}:0.0.99\n    sneaky: 1\n")
+        self.refused(old, new)
+
+    def test_an_allowed_pair_cannot_mask_a_neighbouring_change(self):
+        # Same hunk: an allowed pair next to an unrelated change.
+        old = self.render("0.0.22", "0.0.22").replace(f"  value: {self.A}:0.0.22\n",
+                          f"  value: {self.A}:0.0.22\n    x: 1\n")
+        new = self.render("0.0.99", "0.0.99").replace(
+            f"  value: {self.A}:0.0.99\n", f"  value: {self.A}:0.0.99\n    x: 2\n")
+        self.assertIn("x: ", self.refused(old, new))
+
+    def test_a_declared_suffix_reference_moves_like_a_plain_one(self):
+        old = self.render("0.0.22-rocm", "0.0.22-rocm")
+        new = self.render("0.0.99-rocm", "0.0.99-rocm")
+        self.assertEqual(self.deploy.check_renders(
+            {"o": old}, {"o": new}, [self.A, self.B], "0.0.99-rocm", "-rocm"), ["o"])
 
 
 if __name__ == "__main__":

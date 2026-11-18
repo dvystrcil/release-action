@@ -152,14 +152,49 @@ def render_all(work: Path, dirs: list[Path]) -> dict[str, str]:
     return out
 
 
-def check_renders(before: dict[str, str], after: dict[str, str]) -> list[str]:
+TAG_CHARS = r"[0-9A-Za-z_.-]"
+
+
+def ref_moved(old: str, new: str, images: list[str], version: str,
+              suffix: str = "") -> bool:
+    """True when the only difference between rendered lines `old` and `new`
+    is one deployed image reference moving up to the release:
+    `<image>:<tag>` -> `<image>:<version>`, `<tag>` below `version`.
+
+    The field the reference sits in does not matter. gpu-batch copies each
+    CronJob image into an env `value:` (replacements:, gpu-batch#16), and
+    that copy moves with the tag. A second reference on the line, another
+    image, another tag, or any other edit makes it False.
+    """
+    want = semver(version, suffix)
+    hits = []
+    for image in images:
+        pat = rf"(?<![\w./-]){re.escape(image)}:({TAG_CHARS}+)(?!{TAG_CHARS}|[@:/])"
+        hits += [(m, image) for m in re.finditer(pat, old)]
+    if len(hits) != 1:
+        return False
+    m, image = hits[0]
+    cur = semver(m.group(1), suffix)
+    if want is None or cur is None or cur >= want:
+        return False
+    return new == f"{old[:m.start()]}{image}:{version}{old[m.end():]}"
+
+
+def check_renders(before: dict[str, str], after: dict[str, str],
+                  images: list[str] = (), version: str = "",
+                  suffix: str = "") -> list[str]:
     """The bump must change rendered images and nothing else.
 
     main passed the deploy repo's required `manifests` check (kustomize
     build + kubeconform). A render that differs from main's only in image
     strings cannot change schema validity, so this proves as much as running
     the schema check again, without installing kubeconform on every runner.
-    Returns the roots whose render changed.
+
+    A changed line passes when it is an `image:` line, or when, paired
+    one-to-one with its counterpart in the same hunk, the only change is one
+    of `images` moving from its old tag to `version` (see ref_moved). A hunk
+    whose removed and added counts differ gets no pairing: every line in it
+    must be an `image:` line. Returns the roots whose render changed.
     """
     changed = []
     for root, old in before.items():
@@ -169,11 +204,30 @@ def check_renders(before: dict[str, str], after: dict[str, str]) -> list[str]:
         diff = list(difflib.unified_diff(old.splitlines(), new.splitlines(), n=0, lineterm=""))
         # Skip the two file headers by position: a removed `---` document
         # separator also starts with `---`.
+        hunks, cur = [], None
         for line in diff[2:]:
             if line.startswith("@@"):
+                cur = ([], [])
+                hunks.append(cur)
                 continue
-            if not IMAGE_LINE.match(line[1:]):
-                raise DeployError(f"the bump changes {root}'s render beyond image lines: {line!r}")
+            cur[0 if line.startswith("-") else 1].append(line[1:])
+
+        def refuse(sign, line):
+            raise DeployError(f"the bump changes {root}'s render beyond image "
+                              f"lines: {sign + line!r}")
+
+        for minus, plus in hunks:
+            if len(minus) != len(plus):
+                for sign, lines in (("-", minus), ("+", plus)):
+                    for line in lines:
+                        if not IMAGE_LINE.match(line):
+                            refuse(sign, line)
+                continue
+            for a, b in zip(minus, plus):
+                if IMAGE_LINE.match(a) and IMAGE_LINE.match(b):
+                    continue
+                if not ref_moved(a, b, images, version, suffix):
+                    refuse("-", a)
         changed.append(root)
     if not changed:
         raise DeployError("no rendered manifest changes: the bumped newTag is not "
@@ -223,7 +277,7 @@ def open_pr(work: Path, auth: list[str], repo: str, images: list[str],
             f"Opened as a PR because {reason}; otherwise release-action commits "
             f"this straight to main. The diff was "
             f"checked the same way: newTag lines only, no downgrade, every kustomize "
-            f"root renders with image-only changes.\n")
+            f"root renders with image-reference-only changes.\n")
     r = subprocess.run(["gh", "pr", "create", "--repo", repo, "--base", "main",
                         "--head", branch, "--title", title, "--body", body],
                        capture_output=True, text=True, timeout=120)
@@ -263,8 +317,8 @@ def attempt(tmp: str, n: int, url: str, auth: list[str], repo: str,
     diff = git(work, "diff", "-U0").stdout
     check_diff(diff)
     print(diff)
-    for root in check_renders(before, render_all(work, build_roots)):
-        print(f"renders: {root} (image lines only)")
+    for root in check_renders(before, render_all(work, build_roots), images, version, suffix):
+        print(f"renders: {root} (image references only)")
     title = f"deploy: {' '.join(i.rsplit('/', 1)[-1] for i in images)} {version}"
     git(work, "-c", f"user.name={BOT[0]}", "-c", f"user.email={BOT[1]}",
         "commit", "-qam", title)
