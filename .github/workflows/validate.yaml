@@ -37,17 +37,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
-        # The homelab ARC runner image (harbor.sirddail.net/arc/actions-runner)
-        # has python3 but no pip and no pyyaml. setup-python brings its own.
+        # setup-python pins the interpreter; pyyaml is installed below.
         with:
           python-version: '3.x'
 
       - name: Install PyYAML
         run: |
-          # Retried: one Fastly edge node in PyPI's rotation serves 502s to this
-          # cluster at ~15% (homelab#1029). pip's own retries reuse the
-          # connection and land back on the same node; a fresh process
-          # re-resolves, so three attempts take ~15% to ~0.3%.
+          # Retried in fresh processes: a bad PyPI edge node once served 502s
+          # (homelab#1029, seen from the cluster), and pip's own retries reuse
+          # the connection. A new process re-resolves to another node.
           for attempt in 1 2 3; do
             pip install --quiet pyyaml && break
             [ "$attempt" = 3 ] && { echo "::error::pip install failed three times"; exit 1; }
